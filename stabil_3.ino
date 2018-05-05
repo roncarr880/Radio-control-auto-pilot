@@ -4,42 +4,51 @@
   *  
    The LED drivers on the prop shield are used to drive servos for aileron and elevator output.
    Incoming signals to pins 20 22 23 need to be level changed to 3 volts with FET's or
-      a 74LVTxxxx.
+      a CD4050 or 74LVC245.
    An AUX input only channel is used to change flight modes.
       Mode 0 - normal unrestricted flight.
       Mode 1 - allowed bank angle and pitch restricted. Slight trim corrections at center sticks.
       Mode 2 - Hands off auto pilot. 
      ( there is no yaw control although that could be added and driven from pin 17 buffered on Teensy LC ).
+
+     Test model is a slow stick with ailerons.  ( Hobby King version )
  */      
 /*
  * to do
  *   
  */
 
+int debug = true;
+
 /****   Adjust values **********/
-#define AIL_DEAD 30.0            //  for desired mode 1 flight characteristics
+#define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics
+#define AIL_DEAD2  3.0            //  for desired mode 2 flight.  More auto.
 #define AIL_REVERSE 0
-#define ELE_DEAD 20.0            // wing attack is added. so 20 and 5 becomes -15 to 25 degress.
+#define ELE_DEAD1 20.0            // wing attack is added. so 20 and 5 becomes -15 to 25 degress.
+#define ELE_DEAD2 10.0            // allow 10 deg descent angle power off glide
 #define ELE_REVERSE 0
 
-#define TRIMFACTOR   0.1         // adjust for min trim change mode 0 to mode 1. always positive.
-#define WING_ATTACK_ANGLE 5.0    // adjust +- for desired level trim speed
+// trim.  50 usec servo travel for 3 deg bank gives TRIMFACTOR of 0.06 and I gain of 16.6 ( 1/16.6 is 0.06 )
+// bank angle of 3 deg * 16.6 = 50.   Trim change of 50 * .06 is bank change of 3 deg.
 
+#define TRIMFACTOR   0.06         // adjust for min trim change mode 0 to mode 1. always positive.
+#define WING_ATTACK_ANGLE 1.0    // adjust +- for desired level trim speed
+                                 // the slow stick has some positive incidence built in
 
-//  Pid routine factors
+//  Pid routine factors.  The I terms are instead proportional and repurposed as a trim system.
 float P_ail = 5.0;
-float I_ail = 0.1;
+float I_ail = 16.6;    // 3 deg angle for 50 usec( Tdead ) change in servo timing
 float D_ail = 5.0;
 float ail_setpoint = 0.0;   // not an adjustment
 float ail_dead = 30.0;      // not an adjustment. Change the define above.
 
 float P_ele = 2.0;
-float I_ele = 0.1;
+float I_ele = 16.6;
 float D_ele = 1.0;
 float ele_setpoint = 0.0;   // not an adjustment. Wing attack added elsewhere.
 float ele_dead = 20.0;      // not an adjustment. Change the define above.
 
-const int Idead = 30;   // sticks in trim region.  Value is in usec.   1500 +- Idead.
+const int Tdead = 50;   // sticks in trim region.  Value is in usec.   1500 +- Tdead.
 
 // not normally changed after wiring is setup.  These are the input signals. ( need to be at 3 volts logic ).
 #define AIL_PIN 23
@@ -84,9 +93,9 @@ int insane = 0;
  /***********************************************************************/
 void setup() {
   // put your setup code here, to run once:
-  pinMode(AIL_PIN,INPUT);
-  pinMode(ELE_PIN,INPUT);
-  pinMode(AUX_PIN,INPUT);
+  pinMode(AIL_PIN,INPUT_PULLUP);   // noise when just input when testing disconnected
+  pinMode(ELE_PIN,INPUT_PULLUP);
+  pinMode(AUX_PIN,INPUT_PULLUP);
   
   pinMode(7,OUTPUT);
   digitalWrite(7,HIGH);     // enable the LED 5 volt drivers on prop board as servo signals
@@ -110,7 +119,7 @@ void setup() {
 //   aux_zero = user_aux;     // not really needed
 //  interrupts();
 
-  Serial.begin(9600);       // debug only - remove
+  if( debug )  Serial.begin(9600);       // debug on
   imu.begin();
   filter.begin(100);
 }
@@ -124,12 +133,12 @@ static int servo_flag;
    
    m = calc_mode();
    if( m != mode ){    // anything needed for mode change, like change PID parameters
-    mode = m;
-    if( mode > 0 ){
-       ail_dead = (mode == 2) ? 3.0 : AIL_DEAD;   // trim deadband or fly free +- some bank angel
-    }
+     mode = m;
+     if( mode > 0 ){
+       ail_dead = (mode == 2) ? AIL_DEAD2 : AIL_DEAD1;
+       ele_dead = (mode == 2) ? ELE_DEAD2 : ELE_DEAD1;
+     }
    }
-
    if( imu_process() ){              // imu lib is a once every 10 ms process
       ++servo_flag;                  // que a write servos at 50 percent duty, every 20 ms
    }
@@ -177,26 +186,27 @@ void write_servos(){
   }
   base_ail = constrain(base_ail,1000,2000);
   base_ele = constrain(base_ele,1000,2000);
-Serial.println(base_ail); 
+  if( debug ) Serial.println(base_ail);    // or base_ele for debug plotting
   Aileron.write(base_ail);
   Elevator.write(base_ele);
 }
 
-void trim_adjust(){     // change the setpoints for trim changes
+void trim_adjust(){     // change the setpoints for trim changes !!! is this backwards?
 int t;
 
    // aileron setpoint
     t = base_ail - 1500;
-    t = constrain(t,-Idead,Idead);
-    ail_setpoint = TRIMFACTOR * t;       // !!! trim factor adjust to match when changing modes
-    base_ail -= t;                // remove trim from stick inputs,
-   // ? !!! do we need to reverse the setpoint for aileron servo reversing?
+    t = constrain(t,-Tdead,Tdead);
+    ail_setpoint = TRIMFACTOR * t;       // trim factor adjust to match when changing modes
+    base_ail -= t;                       // remove trim from stick inputs,
    
-  // elevator setpoint with offset from zero somehow.  +5 degrees wing angle?     
+  // elevator setpoint with offset from zero somehow.  +5 degrees wing angle?
+  /*   !!! enable this when enable the Elevator PID      
     t = base_ele - 1500;
-    t = constrain(t,-Idead,Idead);
+    t = constrain(t,-Tdead,Tdead);
     ele_setpoint = (TRIMFACTOR * t) + WING_ATTACK_ANGLE; 
     base_ele -= t;                // remove trim from stick inputs,
+    */
     
 }
 
@@ -238,9 +248,9 @@ unsigned long current;
     if(( current - previous ) > 400 ){
       previous = current;
       noInterrupts();
-      base_aux = user_aux;
+      base_aux = user_aux;     // 3 position switch channel
       interrupts();
-      if( base_aux < 1300 ) m = 0;
+      if( base_aux < 1300 ) m = 0;      // may want to reverse these for desired switch position for each mode
       else if( base_aux > 1700 ) m = 2;
       else m = 1;
     }
@@ -283,7 +293,7 @@ float error;
 float dval;
 static float last_val;
 float result;
-static float result_sum;
+//static float result_sum;
 float dterm;
 static float old_dterm;
 // float pterm;
@@ -293,19 +303,16 @@ static float old_dterm;
       dval = val - last_val;
       last_val = val;
 
-      result = 0;         // calc I term only if user is not using the sticks
-      if( base > (1500 - Idead)  && base < (1500 + Idead) ) result_sum += I_ail * error;
-      result_sum = constrain(result_sum,-Idead,Idead);
-
-      // soft proportional inside the deadband
-      //pterm = (P_ail / 8.0) * error;
+      // Trim system
+      result = I_ail * error;
+      result = constrain(result,-Tdead,Tdead);
 
       // recalculate the error for the P deadband
       if( error > ail_dead ) error -= ail_dead;
       else if( error < -ail_dead ) error += ail_dead;
       else error = 0;
 
-      result = result_sum + P_ail * error;   // + pterm;
+      result = result + P_ail * error;   // + pterm;
 
       dterm = D_ail * dval;
       if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
@@ -323,16 +330,82 @@ static float old_dterm;
       auto_ail = constrain(result,-300,300);
       if( AIL_REVERSE ) auto_ail = -auto_ail;
       
-      // there seems to be a 1 us boggle when changing to integer values 
-      // but maybe when flying it will not matter. This code makes output jump in steps of two  
-     // if( abs(auto_ail - old_auto_ail) == 1 ) auto_ail = old_auto_ail;
-     // old_auto_ail = auto_ail;
-      
+      auto_ail = average_ail(auto_ail);
 }
 
 void auto_ele_pid( int base, float val ){
-  // !!! may want to constrain the values differently plus or minus
-  // engine off in mode 2 will stall if it tries to maintain +5 degress positive wing incidence
+float error;
+float dval;
+static float last_val;
+float result;
+//static float result_sum;
+float dterm;
+static float old_dterm;
+
+
+return;    //!!! not running for now.  When this is enabled, also enable the elevator trim code
   
+
+      error = ele_setpoint - val;
+      dval = val - last_val;
+      last_val = val;
+
+      // Trim system
+      result = I_ele * error;
+      result = constrain(result,-Tdead,Tdead);
+
+      // old I term code
+     // result = 0;         // calc I term only if user is not using the sticks
+     // if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += I_ele * error;
+     // result_sum = constrain(result_sum,-Tdead,Tdead);  
+
+      // recalculate the error for the P deadband
+      if( error > ele_dead ) error -= ele_dead;
+      else if( error < -ele_dead ) error += ele_dead;
+      else error = 0;
+
+      result = result + P_ele * error;   // + pterm;
+
+      dterm = D_ele * dval;
+      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
+      else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
+      else if( old_dterm > 1.0 ) old_dterm -= 0.5;
+      else if( old_dterm < -1.0 ) old_dterm += 0.5;
+      else old_dterm = 0;
+      
+      // result -=  D_ele * dval;
+      result -= old_dterm;
+      
+      auto_ele = constrain(result,-3*Tdead,3*Tdead);  // limit up elev needed if stalls on power off
+      if( ELE_REVERSE ) auto_ele = -auto_ele;
+
+      auto_ele = average_ele( auto_ele );
+
 }
+
+
+int average_ail( int val ){   // slow down the servo attack rate if needed.  Average 4 values
+static int ave[4];            // will this bump the control surface on fast transitions past the trim boundary?
+static int in;                // perhaps can push up the derivative term for stability ?
+int i;
+
+   ave[in++] = val;
+   in &= 3;
+   val = 0;
+   for( i = 0; i < 4; ++i ) val += ave[i];
+   return ( val >> 2 );
+}
+
+int average_ele( int val ){
+static int ave[4];            // will this bump the control surface on fast transitions past the trim boundary?
+static int in;                // it probably will when changing modes
+int i;
+
+   ave[in++] = val;
+   in &= 3;
+   val = 0;
+   for( i = 0; i < 4; ++i ) val += ave[i];
+   return ( val >> 2 );  
+}
+
 
