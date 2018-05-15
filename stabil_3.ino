@@ -34,7 +34,7 @@ int debug = false;                // controls serial printing
 
 /****   Adjust values **********/
 #define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics. +-30 degrees bank allowed.
-#define AIL_DEAD2  5.0            //  for desired mode 2 flight.  Stronger auto flight control.
+#define AIL_DEAD2  20.0            //  for desired mode 2 flight.  Stronger auto flight control.
 #define AIL_REVERSE 0             //  reverse just the calculated adjustment. 
 #define AIL_ZERO_TRIM 1500        // servo pulse time at zero trim setting
 #define AIL_SERVO_GAIN 66         // use 100% gain in tx and adjust here
@@ -52,16 +52,17 @@ int debug = false;                // controls serial printing
 // for Tdead of 100, 5 * 20 = 100.  1/20 is 0.05
 
 #define TRIMFACTOR   0.05        // was .1
-#define WING_ATTACK_ANGLE 1.9    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
+#define WING_ATTACK_ANGLE 1.5    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
                                  // the slow stick has some positive incidence built in
 const int Tdead = 100;   // sticks in trim region.  Value is in usec.   1500 +- Tdead. was 50
 
 //  Pid routine factors.  The I terms are instead proportional and repurposed as a trim system.
 // !!! not adjustments now.  If like param_setup then change these to defines and use the defines in param_setup
-float P_ail = 5.0;
+float P_ail = 7.0;
 float T_ail = 20.0;         // 5 deg angle for 50 usec( Tdead ) change in servo timing
 float I_ail = 0.7;         // an actual I term mode 2 only for now
 float D_ail = 5.0;
+float YI_ail;
 float ail_setpoint = 0.0;   // not an adjustment
 float ail_dead = 30.0;      // not an adjustment. Change the define above.
 
@@ -212,7 +213,7 @@ void write_servos(){
     base_ele += auto_ele;
   }
   base_ail = constrain(base_ail,1000,2000);
-  base_ele = constrain(base_ele,1000,2000);
+  base_ele = constrain(base_ele,1200,2000);   //!!! correct?  elevator hits rudder on up ele
   //if( debug ) Serial.println(base_ail);    // or base_ele for debug plotting
   base_ail = servo_gain( (int32_t)base_ail, AIL_ZERO_TRIM, AIL_SERVO_GAIN );
   Aileron.write(base_ail);
@@ -220,7 +221,7 @@ void write_servos(){
   Elevator.write(base_ele);
 }
 
-void trim_adjust(){     // change the setpoints for trim changes !!! is this backwards?
+void trim_adjust(){     // change the setpoints for trim changes
 int t;
 int dir;
 
@@ -231,15 +232,11 @@ int dir;
     ail_setpoint = TRIMFACTOR * t * dir;       // trim factor adjust to match when changing modes
     base_ail -= t;                       // remove trim from stick inputs,
    
-  // elevator setpoint with offset from zero somehow.  +5 degrees wing angle?
-  /*   !!! enable this when enable the Elevator PID      */
- if( mode == 2){      // !!! debug if statement.  Only enabled mode 2
     dir = ( ELE_REVERSE ) ? -1 : 1;
     t = base_ele - ELE_ZERO_TRIM;
     t = constrain(t,-Tdead,Tdead);
     ele_setpoint = (TRIMFACTOR * t * dir) + WING_ATTACK_ANGLE; 
-    base_ele -= t;                // remove trim from stick inputs,
- }  
+    base_ele -= t;                // remove trim from stick inputs,  
     
 }
 
@@ -257,12 +254,13 @@ static int debug_counter;
      interrupts();
   }
   
-  if( debug ){
-    if( ++debug_counter > 25 ){
-      Serial.print(base_ele); Serial.write(' '); Serial.print(pitch); Serial.write(' '); Serial.print(base_ail); Serial.write(' '); Serial.println(roll);
-      debug_counter = 0;
-    }
-  }
+//  if( debug ){
+//    if( ++debug_counter > 25 ){
+//      Serial.print(base_ele); Serial.write(' '); Serial.print(pitch);
+//      Serial.write(' '); Serial.print(base_ail); Serial.write(' '); Serial.println(roll);
+//      debug_counter = 0;
+//    }
+//  }
 
    // more sanity checking when base values are known
    // the new receivers have servo hold when loosing lock, so this code may never come into play
@@ -350,11 +348,9 @@ static float old_dterm;
       result = T_ail * error;
       result = constrain(result,-Tdead,Tdead);
 
-   //  if( mode == 2 ){
-        if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += I_ail * error;
-        result_sum = constrain(result_sum,-Tdead/2,Tdead/2);
-   //  }
-   //  else result_sum = 0;
+      //I term when tx sticks centered
+      if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += I_ail * error;
+      result_sum = constrain(result_sum,-Tdead,Tdead);
      
       // recalculate the error for the P deadband
       if( error > ail_dead ) error -= ail_dead;
@@ -373,10 +369,9 @@ static float old_dterm;
       // result -=  D_ail * dval;
       result -= old_dterm;
 
-     // error = (result - (float)auto_ail) / 4.0;   // slow down the servo
-     // auto_ail += error;
+      result = yaw_correction( result, base );
       
-      auto_ail = constrain(result,-300,300);
+      auto_ail = constrain(result,-400,400);
       if( AIL_REVERSE ) auto_ail = -auto_ail;
       
       auto_ail = average_ail(auto_ail);
@@ -390,12 +385,6 @@ float result;
 //static float result_sum;
 float dterm;
 static float old_dterm;
-
-
- //    if( mode < 2 ){  
- //     auto_ele = 0;
- //     return;    //!!! not running for now.  When this is enabled, also enable the elevator trim code
- //    }
   
 
       error = ele_setpoint - val;
@@ -470,21 +459,52 @@ int servo_gain( int32_t val, int zero, int gain_){
 }
 
 void param_setup(){
-int m;
+// int m;
 
   ail_dead = AIL_DEAD2;   // not changed per mode now
   ele_dead = ELE_DEAD2;
 
-  P_ail = 5.0;  I_ail = 0.2;  D_ail = 5.0;
-  P_ele = 3.0;  D_ele = 2.0;
+  P_ail = 7.0;  I_ail = 0.0;  D_ail = 20.0;  YI_ail = 0;  // !!! zero'd I_ail term
+  P_ele = 3.0;  D_ele = 5.0;
 
-  m = mode;
+  if( mode == 0 ){    // only trim system and D term active on aileron
+    P_ail = 0;   I_ail = 0;
+  }
+  if( mode == 2 )  YI_ail = 10;  // test yaw correction mode 2
+/*  m = mode;
   while( m--){
     P_ail *= 2;
     I_ail *= 2;
     D_ail *= 2;
     P_ele *= 2;
     D_ele *= 2;
-  }
+  } */
+}
+
+float yaw_correction( float val, int base ){   // add yaw correction to ailerons with leaky integral
+static float result_sum;                       // otherwise coordinated turn not detected?
+static float last_heading;                     // no auto control on rudder, so added to ailerons
+float error;
+static int debug_counter;
+
+      error = last_heading - heading;    
+      // heading seems to precess when standing still.  Why? And rate changes when not level in roll,pitch.
+         error -= 0.3/26.0;
+      last_heading = heading;
+      if( error < -10.0 || error > 10.0 ) return (val + result_sum);  // ignores passing 360 degrees, 0 degrees
+      
+      // only calc when sticks are neutral
+      if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += YI_ail * error;
+      result_sum = constrain(result_sum,-Tdead,Tdead);
+      result_sum = result_sum  - (result_sum / 40.0);
+      if(debug && (++debug_counter > 25)){
+         Serial.print("Yaw "); Serial.print(heading);  Serial.write(' ');
+         Serial.print(result_sum); Serial.write(' ');
+         Serial.print("Trim "); Serial.print(val);
+         Serial.write(' '); Serial.print(base);   // should counter base, not add
+         debug_counter = 0;                       // ie bank right, turn right, get left correction
+         Serial.print(" Roll ");  Serial.println(roll);
+      }
+      return (val + result_sum);
 }
 
