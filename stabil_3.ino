@@ -5,16 +5,18 @@
    The LED drivers on the prop shield are used to drive servos for aileron and elevator output.
    Incoming signals to pins 20 22 23 need to be level changed to 3 volts with FET's or
       a CD4050 or 74LVC245.
-  !!! see below An AUX input only channel is used to change flight modes.
-      Mode 0 - normal unrestricted flight.
-      Mode 1 - allowed bank angle and pitch restricted. Slight trim corrections at center sticks.
-      Mode 2 - Hands off auto pilot. 
-     ( there is no yaw control although that could be added and driven from pin 17 buffered on Teensy LC ).
 
-   !!! New mode test
-      Auto always on.  Parameters are doubled for each mode change.  Only using DEAD2 regions.
+   Removed trim system.  Retained yaw system
       
      Test model is a slow stick with ailerons.  ( Hobby King version )
+
+   Current flying characteristics:  Tx trims seem ineffective.  Model wants to turn either left or right.
+   With weight back, does not climb on full power which is desired for this model.  Too much down thrust?
+
+   Current test is mode 0 - limit bank angles 
+                   mode 1 - full fly by wire
+                   mode 2 - allow the yaw correction on airerons
+     
  */      
 /*
  * to do
@@ -34,14 +36,14 @@ int debug = false;                // controls serial printing
 
 /****   Adjust values **********/
 #define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics. +-30 degrees bank allowed.
-#define AIL_DEAD2  20.0            //  for desired mode 2 flight.  Stronger auto flight control.
+#define AIL_DEAD2 0.2            //  for desired mode 2 flight.  Stronger auto flight control.
 #define AIL_REVERSE 0             //  reverse just the calculated adjustment. 
-#define AIL_ZERO_TRIM 1500        // servo pulse time at zero trim setting
+#define AIL_ZERO_TRIM 1497        // servo pulse time at zero trim setting
 #define AIL_SERVO_GAIN 66         // use 100% gain in tx and adjust here
 #define ELE_DEAD1 20.0            // wing attack is added. so 20 and 5 becomes -15 to 25 degress.
-#define ELE_DEAD2 10.0            // allow 10 deg descent angle power off glide
+#define ELE_DEAD2 0.2            // allow 10 deg descent angle power off glide
 #define ELE_REVERSE 1
-#define ELE_ZERO_TRIM 1500        // zero trim tx signal length as received via the CD4050
+#define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
 #define ELE_SERVO_GAIN 60
 
 // trim.  50 usec servo travel for 3 deg bank gives TRIMFACTOR of 0.06 and I gain of 16.6 ( 1/16.6 is 0.06 )
@@ -51,25 +53,25 @@ int debug = false;                // controls serial printing
 // is the change in usec of the signals to the servos.
 // for Tdead of 100, 5 * 20 = 100.  1/20 is 0.05
 
-#define TRIMFACTOR   0.05        // was .1
-#define WING_ATTACK_ANGLE 1.5    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
+//#define TRIMFACTOR   0.05        // was .1
+#define WING_ATTACK_ANGLE 1.8    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
                                  // the slow stick has some positive incidence built in
-const int Tdead = 100;   // sticks in trim region.  Value is in usec.   1500 +- Tdead. was 50
+const int Tdead = 118;   // sticks in trim region.  Value is in usec.   1500 +- Tdead.
 
-//  Pid routine factors.  The I terms are instead proportional and repurposed as a trim system.
+//  Pid routine factors.
 // !!! not adjustments now.  If like param_setup then change these to defines and use the defines in param_setup
 float P_ail = 7.0;
-float T_ail = 20.0;         // 5 deg angle for 50 usec( Tdead ) change in servo timing
-float I_ail = 0.7;         // an actual I term mode 2 only for now
+//const float T_ail = 20.0;         // 5 deg angle for 50 usec( Tdead ) change in servo timing
+float I_ail = 0.0;         // an actual I term mode 2 only for now
 float D_ail = 5.0;
 float YI_ail;
 float ail_setpoint = 0.0;   // not an adjustment
 float ail_dead = 30.0;      // not an adjustment. Change the define above.
 
 float P_ele = 3.0;
-float T_ele = 20.0;
+// const float T_ele = 20.0;
 float D_ele = 1.0;
-float ele_setpoint = 0.0;   // not an adjustment. Wing attack added elsewhere.
+float ele_setpoint = WING_ATTACK_ANGLE;   // not an adjustment. Wing attack added elsewhere.
 float ele_dead = 20.0;      // not an adjustment. Change the define above.
 
 
@@ -206,7 +208,7 @@ void write_servos(){
 
   get_base_values();
   if( imu_fail == 0 ){
-    trim_adjust();
+    fly_by_wire();
     auto_ail_pid( base_ail,roll );
     auto_ele_pid( base_ele,pitch );
     base_ail += auto_ail;
@@ -221,22 +223,26 @@ void write_servos(){
   Elevator.write(base_ele);
 }
 
-void trim_adjust(){     // change the setpoints for trim changes
-int t;
-int dir;
+void fly_by_wire(){     // change the setpoints instead of direct control of the servo
+float t;
+float dir;   // !!! remove if not needed
 
-   // aileron setpoint
-    dir = ( AIL_REVERSE ) ? -1 : 1;
+    if( mode == 0 ) return;
+    
+   // change aileron setpoint
+    dir = ( AIL_REVERSE ) ? -1.0 : 1.0;
+   // dir = 1.0;  // !!! not needed here ?
     t = base_ail - AIL_ZERO_TRIM;
-    t = constrain(t,-Tdead,Tdead);
-    ail_setpoint = TRIMFACTOR * t * dir;       // trim factor adjust to match when changing modes
-    base_ail -= t;                       // remove trim from stick inputs,
+    // t = constrain(t,-Tdead,Tdead);
+    ail_setpoint = 0.15 * t * dir;       // .09 from 45 deg bank allowed / 500 us stick movement
+    base_ail = AIL_ZERO_TRIM;             
    
-    dir = ( ELE_REVERSE ) ? -1 : 1;
+    dir = ( ELE_REVERSE ) ? -1.0 : 1.0;
+   // dir = 1.0;
     t = base_ele - ELE_ZERO_TRIM;
-    t = constrain(t,-Tdead,Tdead);
-    ele_setpoint = (TRIMFACTOR * t * dir) + WING_ATTACK_ANGLE; 
-    base_ele -= t;                // remove trim from stick inputs,  
+    // t = constrain(t,-Tdead,Tdead);
+    ele_setpoint = (0.15 * t * dir) + WING_ATTACK_ANGLE;   // 22.5 deg allowed 0.045
+    base_ele = ELE_ZERO_TRIM;                
     
 }
 
@@ -254,13 +260,16 @@ static int debug_counter;
      interrupts();
   }
   
-//  if( debug ){
-//    if( ++debug_counter > 25 ){
-//      Serial.print(base_ele); Serial.write(' '); Serial.print(pitch);
-//      Serial.write(' '); Serial.print(base_ail); Serial.write(' '); Serial.println(roll);
-//      debug_counter = 0;
-//    }
-//  }
+  if( debug ){
+    if( ++debug_counter > 25 ){
+      Serial.print("Elevator ");  
+      Serial.print(base_ele); Serial.write(' '); Serial.println(pitch);
+      Serial.print("Aileron ");
+      Serial.print(base_ail); Serial.write(' '); Serial.println(roll);
+      Serial.println();
+      debug_counter = 0;
+    }
+  }
 
    // more sanity checking when base values are known
    // the new receivers have servo hold when loosing lock, so this code may never come into play
@@ -345,12 +354,14 @@ static float old_dterm;
       last_val = val;
 
       // Trim system
-      result = T_ail * error;
-      result = constrain(result,-Tdead,Tdead);
+      result = 0;
+     // result = T_ail * error;
+     // result = constrain(result,-Tdead,Tdead);
 
       //I term when tx sticks centered
       if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += I_ail * error;
-      result_sum = constrain(result_sum,-Tdead,Tdead);
+      else result_sum = 0;  // zero I when moving the sticks ?
+      result_sum = constrain(result_sum,-Tdead/2,Tdead/2);
      
       // recalculate the error for the P deadband
       if( error > ail_dead ) error -= ail_dead;
@@ -392,8 +403,9 @@ static float old_dterm;
       last_val = val;
 
       // Trim system
-      result = T_ele * error;
-      result = constrain(result,-Tdead,Tdead);
+      result = 0;
+     // result = T_ele * error;
+     // result = constrain(result,-Tdead,Tdead);
 
       // old I term code
      // result = 0;         // calc I term only if user is not using the sticks
@@ -416,10 +428,9 @@ static float old_dterm;
       
       // result -=  D_ele * dval;
       result -= old_dterm;
-      
-      auto_ele = constrain(result,-3*Tdead,3*Tdead);  // limit up elev needed if stalls on power off
+       
+      auto_ele = constrain(result,-Tdead,400);  // !!! limits down elevator to trim region
       if( ELE_REVERSE ) auto_ele = -auto_ele;
-
       auto_ele = average_ele( auto_ele );
 
 }
@@ -461,24 +472,24 @@ int servo_gain( int32_t val, int zero, int gain_){
 void param_setup(){
 // int m;
 
-  ail_dead = AIL_DEAD2;   // not changed per mode now
-  ele_dead = ELE_DEAD2;
-
-  P_ail = 7.0;  I_ail = 0.0;  D_ail = 20.0;  YI_ail = 0;  // !!! zero'd I_ail term
-  P_ele = 3.0;  D_ele = 5.0;
-
-  if( mode == 0 ){    // only trim system and D term active on aileron
-    P_ail = 0;   I_ail = 0;
+  if( mode == 0 ){
+     ail_dead = AIL_DEAD1;
+     ele_dead = ELE_DEAD1;
+      // gain of 10 gives full servo travel at 50 degrees bank
+     P_ail = 10.0;  I_ail = 0.0;  D_ail = 20.0;  YI_ail = 0.0;
+     P_ele = 10.0;  D_ele = 10.0;
+     ail_setpoint = 0;
+     ele_setpoint = WING_ATTACK_ANGLE;
   }
-  if( mode == 2 )  YI_ail = 10;  // test yaw correction mode 2
-/*  m = mode;
-  while( m--){
-    P_ail *= 2;
-    I_ail *= 2;
-    D_ail *= 2;
-    P_ele *= 2;
-    D_ele *= 2;
-  } */
+  
+  if( mode == 1 || mode == 2 ){         // fly by wire
+    ail_dead = AIL_DEAD2;
+    ele_dead = ELE_DEAD2;
+    P_ail = 5.0;  I_ail = 0.5;  D_ail = 10.0;  YI_ail = 0.0;
+    P_ele = 5.0;  D_ele = 10.0;
+    
+  }
+  if( mode == 2 ) YI_ail = 5.0;  // loose limits with yaw factor.  How does this fly?
 }
 
 float yaw_correction( float val, int base ){   // add yaw correction to ailerons with leaky integral
@@ -494,16 +505,16 @@ static int debug_counter;
       if( error < -10.0 || error > 10.0 ) return (val + result_sum);  // ignores passing 360 degrees, 0 degrees
       
       // only calc when sticks are neutral
-      if( base > (1500 - Tdead)  && base < (1500 + Tdead) ) result_sum += YI_ail * error;
+      if( base > (AIL_ZERO_TRIM - Tdead)  && base < (AIL_ZERO_TRIM + Tdead) ) result_sum += YI_ail * error;
       result_sum = constrain(result_sum,-Tdead,Tdead);
-      result_sum = result_sum  - (result_sum / 40.0);
+      result_sum = result_sum  - (result_sum / 40.0);   //!!! what should the leak value be?
       if(debug && (++debug_counter > 25)){
-         Serial.print("Yaw "); Serial.print(heading);  Serial.write(' ');
-         Serial.print(result_sum); Serial.write(' ');
-         Serial.print("Trim "); Serial.print(val);
-         Serial.write(' '); Serial.print(base);   // should counter base, not add
+       //  Serial.print("Yaw "); Serial.print(heading);  Serial.write(' ');
+       //  Serial.print(result_sum); Serial.write(' ');
+       //  Serial.print("Trim "); Serial.print(val);
+       //  Serial.write(' '); Serial.print(base);   // should counter base, not add
          debug_counter = 0;                       // ie bank right, turn right, get left correction
-         Serial.print(" Roll ");  Serial.println(roll);
+       //  Serial.print(" Roll ");  Serial.println(roll);
       }
       return (val + result_sum);
 }
