@@ -10,27 +10,33 @@
 
    Current test is mode 0 - limit bank angles, otherwise direct control
                    mode 1 - full fly by wire
-                   mode 2 - Add YP term for final trim
-                        
+                   mode 2 - Add YP term for final trim and straight flight.
+
+   This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
+   the Teensy LC to also drive the Rudder servo.  In that case the YP_ail term would be removed and a 3rd
+   PID controller code would be added.  Another input would also be needed or the Aux input could be used as the
+   rudder input and the mode would be hardcoded to 0,1, or 2 as desired.
  */      
 
 int debug = false;                // controls serial printing
 
 /****   Adjust values **********/
 #define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics. +-30 degrees bank allowed.
-#define AIL_DEAD2 0.75            //  5 usec signal input deadband with 0.15 factor in fly_by_wire
+#define AIL_DEAD2 0.2             //  fly by wire and large deadband does not work
 #define AIL_REVERSE 0             //  reverse just the calculated adjustment. 
 #define AIL_ZERO_TRIM 1497        // servo pulse time at zero trim setting
 #define AIL_SERVO_GAIN 70         // use 100% gain in tx and adjust here
 #define ELE_DEAD1 20.0            // wing attack is added. so 20 and 5 would become -15 to 25 degress.
-#define ELE_DEAD2 5.0            
+#define ELE_DEAD2 0.2 
 #define ELE_REVERSE 1
 #define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
-#define ELE_SERVO_GAIN 70
-#define YAW_REVERSE 0
+#define ELE_SERVO_GAIN 65
+#define YAW_REVERSE 1
 
-#define WING_ATTACK_ANGLE 1.5    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
+#define WING_ATTACK_ANGLE 1.7    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
                                  // the slow stick has some positive incidence built in
+                                 // vary with throttle eventually?
+                                 
 const int Tdead = 118;   // sticks in trim region.  Value is in usec.   1500 +- Tdead.
 
 //  Pid routine factors.
@@ -43,9 +49,12 @@ float ail_setpoint;
 float ail_dead;
 
 float P_ele;
+// float I_ele;       // removed to allow the nose to drop a bit on power off.
 float D_ele;
 float ele_setpoint = WING_ATTACK_ANGLE;
 float ele_dead;
+
+float ave_gz;   // yaw gyro applied to ailerons
 
 
 
@@ -150,7 +159,7 @@ int imu_process(){
   float mx, my, mz;
 static int debug_counter;
 
-static float ave_gx, ave_gy, ave_gz;
+static float ave_gx, ave_gy;
 
    if (imu.available()) {   // data avail about every 10ms by timers in library. 100 times a second
                             // twice as fast as the servo frame rate.
@@ -158,16 +167,18 @@ static float ave_gx, ave_gy, ave_gz;
     // Read the motion sensors
     imu.readMotionSensor(ax, ay, az, gx, gy, gz, mx, my, mz);
 
-    // Update the Madgwick filter
+    // Update the Madgwick filter.  The gyro calibration fudge factors should be moved to defined constants.
       filter.updateIMU(gx-0.43, gy+5.35, gz+0.54, ax, ay, az);
       roll = filter.getRoll();
       pitch = filter.getPitch();
       heading = filter.getYaw(); 
-      
+
+      gz += 0.54;
+      ave_gz = (99.0*ave_gz + gz)/100.0;      // gyro on yaw produces final trim for ailerons.
+       
       if( debug){
         ave_gx = (99.0*ave_gx + gx)/100.0;
         ave_gy = (99.0*ave_gy + gy)/100.0;
-        ave_gz = (99.0*ave_gz + gz)/100.0;
       }
               
       if( debug  && ++debug_counter > 25){
@@ -253,7 +264,7 @@ static int debug_counter;
   if( base_ele > 2500 || base_ele < 500 ) base_ele = ELE_ZERO_TRIM;      
   if( base_ail > 2500 || base_ail < 500 ) base_ail = AIL_ZERO_TRIM;
 
-  // a copy to save the stick positions
+  // a copy to save the stick positions before they are modified by the fly_by_wire function.
   stick_ail = base_ail;
   stick_ele = base_ele;
   
@@ -315,8 +326,7 @@ void aux_service(){
    else user_aux = aux_time;
 }
 
-/*****************   Special PID routines with deadbands and trim system *************************/
-// the trim system has been removed and replaced with full fly by wire
+/*****************   Special PID routines with deadbands  *************************/
 void auto_ail_pid( int stick, float val ){
 float error;
 float dval;
@@ -325,19 +335,15 @@ float result;
 static float result_sum;
 float dterm;
 static float old_dterm;
-// float pterm;
-// static int old_auto_ail;
 
       error = ail_setpoint - val;
       dval = val - last_val;
       last_val = val;
 
-      // Trim system
       result = 0;
-     // result = T_ail * error;
-     // result = constrain(result,-Tdead,Tdead);
 
-      //I term when tx sticks centered
+      //I term when tx sticks centered.  Does this cause issues when in a coordinated turn?  In a turn
+      // the accelerometers may say the wing is level when it isn't.
       if( stick > (1500 - Tdead)  && stick < (1500 + Tdead) ) result_sum += I_ail * error;
       else result_sum = 0;  // zero I when moving the sticks ?
       result_sum = constrain(result_sum,-Tdead/2,Tdead/2);
@@ -350,16 +356,17 @@ static float old_dterm;
       result = result + P_ail * error + result_sum;   // + pterm;
 
       dterm = D_ail * dval;
-      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
+      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise by ignoring +-5 changes.
       else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
-      else if( old_dterm > 1.0 ) old_dterm -= 0.5;
+      else if( old_dterm > 1.0 ) old_dterm -= 0.5;              // leak to zero
       else if( old_dterm < -1.0 ) old_dterm += 0.5;
       else old_dterm = 0;
       
       // result -=  D_ail * dval;
-      result -= old_dterm;                 // damping only with D on the controlled value
+      result -= old_dterm;                 // this does damping only with D on the controlled value instead of error
+                                           // value
       
-      auto_ail = constrain(result,-400,400);
+      auto_ail = constrain(result,-400,400);   // servo correction to be summed with what the pilot is doing.
       if( AIL_REVERSE ) auto_ail = -auto_ail;
       
 }
@@ -378,10 +385,7 @@ static float old_dterm;
       dval = val - last_val;
       last_val = val;
 
-      // Trim system
       result = 0;
-     // result = T_ele * error;
-     // result = constrain(result,-Tdead,Tdead);
 
       // old I term code
      // result = 0;         // calc I term only if user is not using the sticks
@@ -393,7 +397,7 @@ static float old_dterm;
       else if( error < -ele_dead ) error += ele_dead;
       else error = 0;
 
-      result = result + P_ele * error;   // + pterm;
+      result = result + P_ele * error;   // + result_sum
 
       dterm = D_ele * dval;
       if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
@@ -422,7 +426,7 @@ int servo_gain( int32_t val, int zero, int gain_){
 
 void param_setup(){
 
-  if( mode == 0 ){
+  if( mode == 0 ){                     // normal R/C control with bank angle limits
      ail_dead = AIL_DEAD1;
      ele_dead = ELE_DEAD1;
       // gain of 10 gives full servo travel at 50 degrees bank past dead zone
@@ -436,14 +440,17 @@ void param_setup(){
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
     P_ail = 5.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;
-    P_ele = 5.0;  D_ele = 10.0;
+    P_ele = 3.0;  D_ele = 10.0;
     
   }
-  if(mode == 2 ) YP_ail = 20.0/45.0;    // degrees bank for 45 degrees off course
+  if(mode == 2 ) YP_ail = 0.6;      // try the Yaw correction code.
 }
 
 
  // no auto control on rudder, so add yaw correction to ailerons by moving the setpoint
+ // this routine hunts left and right and sometimes loses course
+/*
+ * 
 float yaw_correction( int stick ){
 static float course_;                    
 float error;
@@ -483,5 +490,24 @@ static float yaw;
          debug_counter = 0; 
       }
       return yaw; 
-}                        
+}
+*/
+
+// simpler yaw correction based only upon gyro.  Returns a bank angle.
+float yaw_correction( int stick ){
+float yaw;
+
+    // assume pilot knows what he is doing when stick is outside the trim region.
+    if( stick < ( AIL_ZERO_TRIM - Tdead ) || stick > (AIL_ZERO_TRIM + Tdead ) ){
+      if( ave_gz < -1 ) ave_gz += 1.0;   // ? gentle release ?
+      if( ave_gz >  1 ) ave_gz -= 1.0;
+    }
+    
+    yaw = YP_ail * ave_gz;              // gyro running average, too slow?  Too slow will apply correction out of phase.
+    yaw = constrain(yaw,-20.0,20.0);    // max bank angle allowed for this correction
+    if( YAW_REVERSE ) yaw = -yaw;
+
+    return yaw;
+  
+}
 
