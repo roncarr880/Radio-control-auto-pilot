@@ -13,12 +13,27 @@
                    mode 2 - Add YP term for final trim and straight flight.
 
    This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
-   the Teensy LC to also drive the Rudder servo.  In that case the YP_ail term would be removed and a 3rd
-   PID controller code would be added.  Another input would also be needed or the Aux input could be used as the
-   rudder input and the mode would be hardcoded to 0,1, or 2 as desired.
+   the Teensy LC to also drive the Rudder servo.
+
+   Notes on why I terms are zero or not even coded for elevator.
+     For elevator the desired behavior is to allow the nose to drop for gliding when the power is cut.  An I
+     term would cause stalls.  The P term is also kept weak.
+
+     For Aileron the I term is set to zero based upon experiments.  The slow stick seemed to lock into a shallow
+     spiral either right or left.  The theory is that the spiral was a coordinated turn and the instuments could not
+     detect the difference from level flight.  The YP term was introduced to use yaw detection for recovering from a 
+     spiral.  A slow trim speed and aileron non-effectiveness may have been a contributing factor of the model entering
+     the shallow spirals and not flying straight.  The model could not be oonsistantly trimmed for level flight.  In 
+     addition to using the YP term, the model was trimmed for a faster speed.
+     
+     I am also starting to believe the motor mount has too much down thrust or there is an interaction as the
+     auto pilot trims to keep the model level when power is increased.  
  */      
 
-int debug = false;                // controls serial printing
+const int debug = false;                // controls serial printing
+const int four_channels_only = false;   // true if the tx does not have an alt channel.
+                                        // if using a 3 or 4 channel radio, the mode will be as hardcoded
+                                        // in the calc_mode function
 
 /****   Adjust values **********/
 #define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics. +-30 degrees bank allowed.
@@ -65,7 +80,7 @@ float ave_gz;   // yaw gyro applied to ailerons
 
 /*****************************************/
 
-//#include <PWMServo.h>
+//#include <PWMServo.h>    // only has about 5 us steps.   1000 us / 180 degrees
 #include <Servo.h>
 
 #include <NXPMotionSense.h>
@@ -103,7 +118,7 @@ int imu_fail;
  /***********************************************************************/
 void setup() {
   // put your setup code here, to run once:
-  pinMode(AIL_PIN,INPUT_PULLUP);   // noise when just input when testing disconnected
+  pinMode(AIL_PIN,INPUT_PULLUP);
   pinMode(ELE_PIN,INPUT_PULLUP);
   pinMode(AUX_PIN,INPUT_PULLUP);
   
@@ -116,10 +131,8 @@ void setup() {
   
   attachInterrupt( AIL_PIN, ail_service, CHANGE );
   attachInterrupt( ELE_PIN, ele_service, CHANGE );
-  attachInterrupt( AUX_PIN, aux_service, CHANGE );
+  if( four_channels_only == false ) attachInterrupt( AUX_PIN, aux_service, CHANGE );
 
-//Aileron2.attach(3,1000,2000);  // pins 3 and 4 use timer FTM2
-//Aileron2.write(90);
   Aileron.attach(13,1000,2000); 
   Elevator.attach(11,1000,2000);
 
@@ -283,6 +296,7 @@ unsigned long current;
 
   m = mode;
   if( insane ) m = 2;     // user inputs lost, fly on auto pilot only
+  else if( four_channels_only ) m = 2;
   else{
     current = millis();
     if(( current - previous ) > 400 ){
@@ -439,11 +453,11 @@ void param_setup(){
   if( mode == 1 || mode == 2 ){         // fly by wire
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
-    P_ail = 5.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;
+    P_ail = 7.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;  // p_ail was 5.0. Trying more P and less YP
     P_ele = 3.0;  D_ele = 10.0;
     
   }
-  if(mode == 2 ) YP_ail = 0.6;      // try the Yaw correction code.
+  if(mode == 2 ) YP_ail = 0.4;      // try the Yaw correction code.  was 0.6 and flew straight.
 }
 
 
