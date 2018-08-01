@@ -9,8 +9,8 @@
      Test model is a slow stick with ailerons.  ( Hobby King version )
 
    Current test is mode 0 - limit bank angles, otherwise direct control
-                   mode 1 - full fly by wire
-                   mode 2 - Add YP term for final trim and straight flight.
+                   mode 1 - full fly by wire, some I + YP
+                   mode 2 - some more I gain
 
    This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
    the Teensy LC to also drive the Rudder servo.
@@ -31,7 +31,7 @@
  */      
 
 const int debug = false;                // controls serial printing
-const int four_channels_only = false;   // true if the tx does not have an alt channel.
+const int four_channels_only = false;    // true if the tx does not have an alt channel.
                                         // if using a 3 or 4 channel radio, the mode will be as hardcoded
                                         // in the calc_mode function
 
@@ -45,12 +45,12 @@ const int four_channels_only = false;   // true if the tx does not have an alt c
 #define ELE_DEAD2 0.2 
 #define ELE_REVERSE 1
 #define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
-#define ELE_SERVO_GAIN 65
+#define ELE_SERVO_GAIN 65         // auto up ele also limited elsewhere as the elevator hits the rudder on this plane
 #define YAW_REVERSE 1
 
-#define WING_ATTACK_ANGLE 1.7    // adjust +- for desired level trim speed 1st test was 2, tried 1.8
+#define WING_ATTACK_ANGLE 1.85    // adjust +- for desired level trim speed.
                                  // the slow stick has some positive incidence built in
-                                 // vary with throttle eventually?
+                                 // 1.7 == -79 up trim needed in auto pilot mode
                                  
 const int Tdead = 118;   // sticks in trim region.  Value is in usec.   1500 +- Tdead.
 
@@ -59,7 +59,7 @@ const int Tdead = 118;   // sticks in trim region.  Value is in usec.   1500 +- 
 float P_ail;
 float I_ail;
 float D_ail;
-float YP_ail;               // Yaw
+float YP_ail;               // Yaw applied to aileron
 float ail_setpoint;
 float ail_dead;
 
@@ -80,7 +80,7 @@ float ave_gz;   // yaw gyro applied to ailerons
 
 /*****************************************/
 
-//#include <PWMServo.h>    // only has about 5 us steps.   1000 us / 180 degrees
+//#include <PWMServo.h>  // only has about 5 us steps.  1000 us / 180 degrees.  12 bits 50 hz -> 20000 us / 4096
 #include <Servo.h>
 
 #include <NXPMotionSense.h>
@@ -359,8 +359,8 @@ static float old_dterm;
       //I term when tx sticks centered.  Does this cause issues when in a coordinated turn?  In a turn
       // the accelerometers may say the wing is level when it isn't.
       if( stick > (1500 - Tdead)  && stick < (1500 + Tdead) ) result_sum += I_ail * error;
-      else result_sum = 0;  // zero I when moving the sticks ?
-      result_sum = constrain(result_sum,-Tdead/2,Tdead/2);
+      // else result_sum = 0;  // zero I when moving the sticks ?
+      result_sum = constrain(result_sum,-Tdead/2,Tdead/2);   // clip to half the trim region
      
       // recalculate the error for the P deadband
       if( error > ail_dead ) error -= ail_dead;
@@ -453,11 +453,11 @@ void param_setup(){
   if( mode == 1 || mode == 2 ){         // fly by wire
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
-    P_ail = 7.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;  // p_ail was 5.0. Trying more P and less YP
+    P_ail = 5.0;  I_ail = 0.125;  D_ail = 20.0;  YP_ail = 0.7; // trying I values again, but only when YP_ail also non zero
     P_ele = 3.0;  D_ele = 10.0;
     
   }
-  if(mode == 2 ) YP_ail = 0.4;      // try the Yaw correction code.  was 0.6 and flew straight.
+  if(mode == 2 ) I_ail = 0.25;   //YP_ail = 0.7;   // flew ok with 0.5 and 1.0 I_ail gain, trying less.
 }
 
 
