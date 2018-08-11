@@ -4,8 +4,6 @@
   *  
 
    Adding altimeter with version 4.
-   !!! reading the altitude glitches the servos.   Altitude read takes 384 ms.
-   !!! adafruit library modified to split read into 2 calls, 1 to start a reading, and 2 to get the result 1 second later.
    
    The LED drivers on the prop shield are used to drive servos for aileron and elevator output.
    Incoming signals to pins 20 22 23 need to be level changed to 3 volts with FET's or
@@ -39,7 +37,7 @@ const int four_channels_only = false;    // true if the tx does not have an alt 
 #define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
 #define ELE_SERVO_GAIN 65         // auto up ele also limited elsewhere as the elevator hits the rudder on this plane
 #define YAW_REVERSE 1
-#define ALT_REVERSE 0             // altitude hold direction
+#define ALT_REVERSE 0             // altitude hold direction.  Normally false unless mounted backwards.
 
 #define WING_ATTACK_ANGLE 1.85    // adjust +- for desired level trim speed.
                                  // the slow stick has some positive incidence built in
@@ -80,12 +78,10 @@ float ave_gz;   // yaw gyro applied to ailerons
 #include <MadgwickAHRS.h>
 #include <Wire.h>
 #include <EEPROM.h>
-#include <Adafruit_MPL3115A2.h>
 
 
 NXPMotionSense imu;
 Madgwick filter;
-Adafruit_MPL3115A2 baro = Adafruit_MPL3115A2();
 
 elapsedMicros ail_time;  
 elapsedMicros ele_time;
@@ -137,17 +133,13 @@ void setup() {
   if( debug )  Serial.begin(9600);       // debug on
   imu.begin();
   filter.begin(100);
-  baro.begin();
   param_setup();
-  altimeter = baro.getAltitude(0);
-  baro.getAltitude(1);              // que next reading
-  delay(400);                       // wait long enough for data to be ready
 }
 
 void loop() {
 int m;
 static int servo_flag;
-static unsigned long altimeter_time;
+static int alt_time;
 
    sanity_check();     // are the input servo signals arriving as expected
    
@@ -167,18 +159,15 @@ static unsigned long altimeter_time;
        write_servos();
        servo_flag = 0;
        fail_safe_timer = 0;
+       if(++alt_time >= 25 ){       // every 500ms read the new altitude
+          altimeter = imu.getAltitude();
+          alt_time = 0;
+          if( debug ){
+             Serial.print("Altitude: ");  Serial.println(altimeter);
+          }
+       }
    }
 
-   if( (millis() - altimeter_time) > 1000 ){   // check altitude once a second
-       altimeter_time = millis();
-       altimeter = baro.getAltitude(2);        // get the reading queued 1 second ago
-       if( debug ){
-       // Serial.print(millis() - altimeter_time);  // takes 384 ms to get a reading causing servo glitching
-        Serial.print(" Altitude: ");
-        Serial.println(altimeter);
-       }
-       baro.getAltitude(1);                    // que next 
-   }
 }
 
 int imu_process(){
