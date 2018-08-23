@@ -1,5 +1,7 @@
 # Radio-control-auto-pilot
-Very simple fixed wing autopilot using Teensy LC and the Prop Shield
+Very simple fixed wing autopilot using Teensy LC and the Prop Shield.
+Mode 0:  Full control with bank angle protection.
+Mode 1:  Fly by wire with auto leveling.
+Mode 2:  Altitude hold fly by wire.  Or fast switch to climbout/takeoff mode.
 
-Currently a work in progress, but it is getting to where it may be useful to others.
-The Adafruit MPL3115A2 library was modified to avoid the 384ms wait for altitude conversion. Stabil_4 is a version that has an altitude hold feature.  Otherwise it is the same as stabil_3.
+The motion sense library was modified to allow reading the barometer.
