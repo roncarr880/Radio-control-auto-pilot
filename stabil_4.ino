@@ -4,16 +4,15 @@
   *  
 
    Adding altimeter with version 4.
+   Test plane is now a Ranger G2.
    
    The LED drivers on the prop shield are used to drive servos for aileron and elevator output.
    Incoming signals to pins 20 22 23 need to be level changed to 3 volts with FET's or
       a CD4050 or 74LVC245.
-      
-     Test model is a slow stick with ailerons.  ( Hobby King version )
 
    Current test is mode 0 - limit bank angles, otherwise direct control
-                   mode 1 - full fly by wire, some I + YP.  Default mode if signals lost.
-                   mode 2 - mode 1 + altitude hold
+                   mode 1 - full fly by wire, Zero YP zero I.   Default mode if signals lost.
+                   mode 2 - YP and some I term added.  Altimeter not used yet.
 
    This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
    the Teensy LC to also drive the Rudder servo.   Currently yaw corrections are applied to ailerons.
@@ -26,22 +25,21 @@ const int four_channels_only = false;    // true if the tx does not have an alt 
                                         // in the calc_mode function
 
 /****   Adjust values **********/
-#define AIL_DEAD1 30.0            //  for desired mode 1 flight characteristics. +-30 degrees bank allowed.
+#define AIL_DEAD1 45.0            //  for desired mode 1 flight characteristics. +-n degrees bank allowed.
 #define AIL_DEAD2 0.2             //  fly by wire and large deadband does not work
 #define AIL_REVERSE 0             //  reverse just the calculated adjustment. 
 #define AIL_ZERO_TRIM 1497        // servo pulse time at zero trim setting.  Print out to find the value.
-#define AIL_SERVO_GAIN 70         // use 100% gain in tx and adjust here
-#define ELE_DEAD1 20.0            // wing attack is added. so 20 and 5 would become -15 to 25 degress.
+#define AIL_SERVO_GAIN 100        // use 100% gain in tx and adjust here
+#define ELE_DEAD1 30.0            // wing attack is added. so 20 and 5 would become -15 to 25 degress.
 #define ELE_DEAD2 0.2 
-#define ELE_REVERSE 1
+#define ELE_REVERSE 0
 #define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
-#define ELE_SERVO_GAIN 65         // auto up ele also limited elsewhere as the elevator hits the rudder on this plane
+#define ELE_SERVO_GAIN 100        // auto up ele also limited elsewhere as the elevator hits the rudder on this plane
 #define YAW_REVERSE 1
 #define ALT_REVERSE 0             // altitude hold direction.  Normally false unless mounted backwards.
 
-#define WING_ATTACK_ANGLE 1.85    // adjust +- for desired level trim speed.
-                                 // the slow stick has some positive incidence built in
-                                 // 1.7 == -79 up trim needed in auto pilot mode
+#define WING_ATTACK_ANGLE 1.5    // adjust +- for desired level trim speed.
+
                                  
 const int Tdead = 118;   // sticks in trim region.  Value is in usec.   1500 +- Tdead.
 
@@ -59,6 +57,8 @@ float P_ele;
 float D_ele;
 float ele_setpoint = WING_ATTACK_ANGLE;
 float ele_dead;
+float ele_alt_hold;
+float climb_angle;    // for takeoff and climbing to altitude for gliding
 
 float ave_gz;   // yaw gyro applied to ailerons
 
@@ -110,6 +110,52 @@ float altitude_fixed;
 
 
  /***********************************************************************/
+void param_setup(){
+static unsigned long last_time;
+
+  climb_angle = 0;                     // assume not climbout mode
+  if( mode == 0 ){                     // normal R/C control with bank angle limits
+     ail_dead = AIL_DEAD1;
+     ele_dead = ELE_DEAD1;
+      // gain of 10 gives full servo travel at 50 degrees bank past dead zone
+     P_ail = 10.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;
+     P_ele = 5.0;  D_ele = 10.0;
+     ail_setpoint = 0;
+     ele_setpoint = WING_ATTACK_ANGLE;
+     ele_alt_hold = 0.0;
+  }
+  
+  if( mode == 1 || mode == 2 ){         // fly by wire
+    ail_dead = AIL_DEAD2;
+    ele_dead = ELE_DEAD2;
+    P_ail = 5.0;  I_ail = 0.25;  D_ail = 20.0;  YP_ail = 0.4;
+    P_ele = 3.0;  D_ele = 10.0;
+    ele_alt_hold = 0.0;
+
+    if( mode == 1 ) last_time = millis();
+    
+  }
+  // switching to mode 2 less than second from last change enables climbout/takeoff mode.  otherwise altitide hold mode.
+  // does the mode switch need debouncing now or does the transmitter handle that ?
+  if(mode == 2 ){          
+    ele_alt_hold = 0.6;                  // normal mode 2 is altitude hold
+    
+    if( (millis() - last_time) < 1000 ){ // enter climbout mode
+       ele_alt_hold = 0.0;               // turn off altitude hold
+       YP_ail = 0.0;                     // turn off the yaw to aileron correction so wings don't dig into ground
+                                         // on rudder corrections if rising off ground
+       climb_angle = 15.0;               // climbout angle to maintain
+       P_ail = 10.0;                     // stronger wing leveling while close to ground
+       P_ele = 5.0;                      // stronger elevator corrections
+       I_ail = 0.0;                      // turn off I term when not using the YP yaw correction
+                                         // else may spiral in a coordinated turn
+    }
+    
+    last_time = millis();
+  }
+}
+
+ 
 void setup() {
   // put your setup code here, to run once:
   pinMode(AIL_PIN,INPUT_PULLUP);
@@ -163,7 +209,7 @@ static int alt_time;
           altimeter = imu.getAltitude();
           alt_time = 0;
           if( debug ){
-             Serial.print("Altitude: ");  Serial.println(altimeter);
+             //Serial.print("Altitude: ");  Serial.println(altimeter);
           }
        }
    }
@@ -199,10 +245,12 @@ static float ave_gx, ave_gy;
       }
               
       if( debug  && ++debug_counter > 25){
-        //Serial.print("Heading "); Serial.println(heading); 
         //Serial.print("G X axis "); Serial.println(ave_gx); 
         //Serial.print("G Y axis "); Serial.println(ave_gy);
         //Serial.print("G Z axis "); Serial.println(ave_gz); Serial.println();
+        Serial.print("Roll "); Serial.println(roll);
+        Serial.print("Pitch "); Serial.println(pitch);
+        Serial.print("Heading "); Serial.println(heading);  Serial.println();
         debug_counter = 0;
       }
     
@@ -240,14 +288,14 @@ float dir;
    // change aileron setpoint
     dir = ( AIL_REVERSE ) ? -1.0 : 1.0;
     t = base_ail - AIL_ZERO_TRIM;
-    ail_setpoint = 0.15 * t * dir;       // .09 from 45 deg bank allowed / 500 us stick movement
+    ail_setpoint = 0.2 * t * dir;       // was 0.15, more aileron needed .09 from 45 deg bank allowed / 500 us stick movement
     ail_setpoint += yaw_correction( stick_ail );
     base_ail = AIL_ZERO_TRIM;            // base to neutral when changing setpoints
    
     dir = ( ELE_REVERSE ) ? -1.0 : 1.0;
     t = base_ele - ELE_ZERO_TRIM;
-    ele_setpoint = (0.15 * t * dir) + WING_ATTACK_ANGLE;
-    if( mode == 2 ) ele_setpoint += altitude_hold( stick_ele );
+    ele_setpoint = (0.2 * t * dir) + WING_ATTACK_ANGLE + climb_angle;   // was 0.15
+    if( mode == 2 ) ele_setpoint += altitude_hold( stick_ele ); 
     base_ele = ELE_ZERO_TRIM;                
     
 }
@@ -443,28 +491,6 @@ int servo_gain( int32_t val, int zero, int gain_){
    return val;
 }
 
-void param_setup(){
-
-  if( mode == 0 ){                     // normal R/C control with bank angle limits
-     ail_dead = AIL_DEAD1;
-     ele_dead = ELE_DEAD1;
-      // gain of 10 gives full servo travel at 50 degrees bank past dead zone
-     P_ail = 10.0;  I_ail = 0.0;  D_ail = 20.0;  YP_ail = 0.0;
-     P_ele = 5.0;  D_ele = 10.0;
-     ail_setpoint = 0;
-     ele_setpoint = WING_ATTACK_ANGLE;
-  }
-  
-  if( mode == 1 || mode == 2 ){         // fly by wire
-    ail_dead = AIL_DEAD2;
-    ele_dead = ELE_DEAD2;
-    P_ail = 5.0;  I_ail = 0.25;  D_ail = 20.0;  YP_ail = 0.7; // trying I values again, but only when YP_ail also non zero
-    P_ele = 3.0;  D_ele = 10.0;
-    
-  }
-  // if(mode == 2 ) I_ail = 0.25;   //YP_ail = 0.7;   // flew ok with 0.5 and 1.0 I_ail gain, trying less.
-  // mode 2 is now altitude hold
-}
 
 
  // no auto control on rudder, so add yaw correction to ailerons by moving the setpoint
@@ -536,11 +562,11 @@ float alt;
 
    // if pilot is moving the stick, capture a new value for the altitude to fly at
    if( stick < ( ELE_ZERO_TRIM - Tdead ) || stick > (ELE_ZERO_TRIM + Tdead ) ){
-      altitude_fixed = altimeter;
+     // altitude_fixed = altimeter;    // maybe not a good idea
    }
 
-   alt = 0.4 * ( altitude_fixed - altimeter );     // +- 5 meters ?  param hardcoded for now as 0.4
-   alt = constrain( alt, -2.0, 2.0 );     // allow 2 degrees correction
+   alt = ele_alt_hold * ( altitude_fixed - altimeter );     // +- 5 meters ?  param hardcoded for now as 0.4
+   alt = constrain( alt, -2.0, 5.0 );     // allow 2 degrees correction
    if( ALT_REVERSE ) alt = -alt;          // think will need to be false 
 
    return alt;
