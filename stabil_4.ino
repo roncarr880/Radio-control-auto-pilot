@@ -11,8 +11,8 @@
       a CD4050 or 74LVC245.
 
    Current test is mode 0 - limit bank angles, otherwise direct control
-                   mode 1 - full fly by wire, Zero YP zero I.   Default mode if signals lost.
-                   mode 2 - YP and some I term added.  Altimeter not used yet.
+                   mode 1 - full fly by wire, Default mode if signals lost.
+                   mode 2 - Altitude hold.  Or launch mode selected with mode change under a second.
 
    This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
    the Teensy LC to also drive the Rudder servo.   Currently yaw corrections are applied to ailerons.
@@ -144,11 +144,11 @@ static unsigned long last_time;
        ele_alt_hold = 0.0;               // turn off altitude hold
        YP_ail = 0.0;                     // turn off the yaw to aileron correction so wings don't dig into ground
                                          // on rudder corrections if rising off ground
-       climb_angle = 15.0;               // climbout angle to maintain
-       P_ail = 10.0;                     // stronger wing leveling while close to ground
-       P_ele = 5.0;                      // stronger elevator corrections
-       I_ail = 0.0;                      // turn off I term when not using the YP yaw correction
-                                         // else may spiral in a coordinated turn
+       climb_angle = 20.0;               // climbout angle to maintain
+       P_ail = 8.0;                     // stronger wing leveling while close to ground
+       P_ele = 12.0;                      // stronger elevator corrections. check for oscillations.
+       //I_ail = 0.0;                      // turn off I term when not using the YP yaw correction?
+       D_ele = 20.0;                     // more damping if rotating to nose down on hand launch
     }
     
     last_time = millis();
@@ -288,7 +288,7 @@ float dir;
    // change aileron setpoint
     dir = ( AIL_REVERSE ) ? -1.0 : 1.0;
     t = base_ail - AIL_ZERO_TRIM;
-    ail_setpoint = 0.2 * t * dir;       // was 0.15, more aileron needed .09 from 45 deg bank allowed / 500 us stick movement
+    ail_setpoint = 0.2 * t * dir;       // 0.2 * 500ns == can set a 100 degree bank angle but no more.
     ail_setpoint += yaw_correction( stick_ail );
     base_ail = AIL_ZERO_TRIM;            // base to neutral when changing setpoints
    
@@ -565,7 +565,7 @@ float alt;
      // altitude_fixed = altimeter;    // maybe not a good idea
    }
 
-   alt = ele_alt_hold * ( altitude_fixed - altimeter );     // +- 5 meters ?  param hardcoded for now as 0.4
+   alt = ele_alt_hold * ( altitude_fixed - altimeter );
    alt = constrain( alt, -2.0, 5.0 );     // allow 2 degrees correction
    if( ALT_REVERSE ) alt = -alt;          // think will need to be false 
 
