@@ -107,13 +107,16 @@ int insane = 0;
 int imu_fail;
 float altimeter;
 float altitude_fixed;
+int full_up;             // for takeoff mode
 
 
  /***********************************************************************/
 void param_setup(){
 static unsigned long last_time;
 
-  climb_angle = 0;                     // assume not climbout mode
+  climb_angle = 0.0;                     // assume not climbout mode
+  full_up = 0;
+  
   if( mode == 0 ){                     // normal R/C control with bank angle limits
      ail_dead = AIL_DEAD1;
      ele_dead = ELE_DEAD1;
@@ -128,8 +131,8 @@ static unsigned long last_time;
   if( mode == 1 || mode == 2 ){         // fly by wire
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
-    P_ail = 5.0;  I_ail = 0.25;  D_ail = 20.0;  YP_ail = 0.4;
-    P_ele = 3.0;  D_ele = 10.0;
+    P_ail = 5.0;  I_ail = 0.25;  D_ail = 0.0;  YP_ail = 0.4;
+    P_ele = 5.0;  D_ele = 0.0;
     ele_alt_hold = 0.0;
 
     if( mode == 1 ) last_time = millis();
@@ -137,22 +140,35 @@ static unsigned long last_time;
   }
   // switching to mode 2 less than second from last change enables climbout/takeoff mode.  otherwise altitide hold mode.
   // does the mode switch need debouncing now or does the transmitter handle that ?
+  // have noticed one time an uncommanded change to climbout mode from altitude hold. Why?  A hold from RX?
   if(mode == 2 ){          
-    ele_alt_hold = 0.6;                  // normal mode 2 is altitude hold
+    ele_alt_hold = 0.8;                  // normal mode 2 is altitude hold
     
     if( (millis() - last_time) < 1000 ){ // enter climbout mode
+       if( stick_ail > 1700 || stick_ail < 1300 )  full_up = 1;  // launch mode if holding aileron
        ele_alt_hold = 0.0;               // turn off altitude hold
        YP_ail = 0.0;                     // turn off the yaw to aileron correction so wings don't dig into ground
                                          // on rudder corrections if rising off ground
        climb_angle = 20.0;               // climbout angle to maintain
-       P_ail = 8.0;                     // stronger wing leveling while close to ground
-       P_ele = 12.0;                      // stronger elevator corrections. check for oscillations.
+       //P_ail = 10.0;                   // stronger wing leveling while close to ground. rates doubled if enabled
+       P_ele = 10.0;                     // stronger elevator corrections. check for oscillations.
        //I_ail = 0.0;                      // turn off I term when not using the YP yaw correction?
-       D_ele = 20.0;                     // more damping if rotating to nose down on hand launch
+       //D_ele = 30.0;                     // more damping if rotating to nose down on hand launch
     }
     
     last_time = millis();
   }
+
+  // testing D factors
+  /*
+  P_ail = 0;  P_ele = 0;  YP_ail = 0;  ele_alt_hold = 0;
+  I_ail = 0; 
+
+  if( mode == 0 ) D_ail = 20, D_ele = 20;
+  if( mode == 1 ) D_ail = 40, D_ele = 40;
+  if( mode == 2 ) D_ail = 80, D_ele = 80;
+  */
+  
 }
 
  
@@ -433,7 +449,7 @@ static float old_dterm;
       result -= old_dterm;                 // this does damping only with D on the controlled value instead of error
                                            // value
       
-      auto_ail = constrain(result,-400,400);   // servo correction to be summed with what the pilot is doing.
+      auto_ail = constrain(result,-500,500);   // servo correction to be summed with what the pilot is doing.
       if( AIL_REVERSE ) auto_ail = -auto_ail;
       
 }
@@ -476,7 +492,14 @@ static float old_dterm;
       // result -=  D_ele * dval;
       result -= old_dterm;
        
-      auto_ele = constrain(result,-2*Tdead,400);  // limits down elevator to 2 * trim region
+      auto_ele = constrain(result,-500,500);
+
+      // launch mode full up elevator until get hands on the controls.
+      // Not tested when Ele is not reversed in the TX.
+      if( (stick > (1500+Tdead)) || (stick < (1500-Tdead)) ) full_up = 0;
+      if( auto_ele < -Tdead ) full_up = 0;        // wants to go down, nose too high  
+      if( full_up ) auto_ele = 500;               // careful if enabled, launch only
+      
       if( ELE_REVERSE ) auto_ele = -auto_ele;
 
 }
