@@ -12,7 +12,7 @@
 
    Current test is mode 0 - limit bank angles, otherwise direct control
                    mode 1 - full fly by wire, Default mode if signals lost.
-                   mode 2 - Altitude hold.  Or launch mode selected with mode change under a second.
+                   mode 2 - Altitude hold, climb, or launch mode.
 
    This version drives two servos.  A possible improvement could use the LED driver via pin 17 of 
    the Teensy LC to also drive the Rudder servo.   Currently yaw corrections are applied to ailerons.
@@ -112,10 +112,10 @@ int full_up;             // for takeoff mode
 
  /***********************************************************************/
 void param_setup(){
-static unsigned long last_time;
+static unsigned long last_mode2_time;   // last time we changed into mode 2
+static int mode2_state;  // 0-alt hold, 1-climb 10 deg, 2-climb 20 deg, 3-launch
 
-  climb_angle = 0.0;                     // assume not climbout mode
-  full_up = 0;
+  ele_alt_hold = 0.0; full_up = 0; climb_angle = 0.0;  // reset mode 2 params
   
   if( mode == 0 ){                     // normal R/C control with bank angle limits
      ail_dead = AIL_DEAD1;
@@ -125,38 +125,36 @@ static unsigned long last_time;
      P_ele = 5.0;  D_ele = 10.0;
      ail_setpoint = 0;
      ele_setpoint = WING_ATTACK_ANGLE;
-     ele_alt_hold = 0.0;
   }
   
-  if( mode == 1 || mode == 2 ){         // fly by wire
+  if( mode == 1 || mode == 2 ){         // fly by wire.  Less twitchy with zero D terms?
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
     P_ail = 5.0;  I_ail = 0.25;  D_ail = 0.0;  YP_ail = 0.4;
     P_ele = 5.0;  D_ele = 0.0;
-    ele_alt_hold = 0.0;
-
-    if( mode == 1 ) last_time = millis();
-    
   }
-  // switching to mode 2 less than second from last change enables climbout/takeoff mode.  otherwise altitide hold mode.
+  
+  // switching to mode 2 less than 5 seconds from last change enables mode 2 state change.  otherwise altitide hold mode.
   // does the mode switch need debouncing now or does the transmitter handle that ?
-  // have noticed one time an uncommanded change to climbout mode from altitude hold. Why?  A hold from RX?
-  if(mode == 2 ){          
-    ele_alt_hold = 0.8;                  // normal mode 2 is altitude hold
+  // have noticed one time an uncommanded change to climbout mode from altitude hold. Why?  Bounce?  A hold from RX?
+  if(mode == 2 ){  
+
+    if( (millis() - last_mode2_time ) < 5000 ) ++mode2_state;
+    else mode2_state = 0;
     
-    if( (millis() - last_time) < 1000 ){ // enter climbout mode
-       if( stick_ail > 1700 || stick_ail < 1300 )  full_up = 1;  // launch mode if holding aileron
-       ele_alt_hold = 0.0;               // turn off altitude hold
-       YP_ail = 0.0;                     // turn off the yaw to aileron correction so wings don't dig into ground
-                                         // on rudder corrections if rising off ground
-       climb_angle = 20.0;               // climbout angle to maintain
-       //P_ail = 10.0;                   // stronger wing leveling while close to ground. rates doubled if enabled
-       P_ele = 10.0;                     // stronger elevator corrections. check for oscillations.
-       //I_ail = 0.0;                      // turn off I term when not using the YP yaw correction?
-       //D_ele = 30.0;                     // more damping if rotating to nose down on hand launch
+    mode2_state &= 3;
+    last_mode2_time = millis();
+
+    switch( mode2_state ){
+      case 0:   ele_alt_hold = 0.8; full_up = 0; climb_angle = 0.0;  break;    // altitude hold
+      case 1:   ele_alt_hold = 0.0; full_up = 0; climb_angle = 10.0;  break;   // climb
+      case 2:   ele_alt_hold = 0.0; full_up = 0; climb_angle = 20.0;  break;   // climb
+      case 3:   ele_alt_hold = 0.0; full_up = 1; climb_angle = 20.0;           // launch
+                YP_ail = 0.0;  // turn off the yaw to aileron correction so wings don't dig into ground on launch
+                P_ail = 10.0;  I_ail = 0.0;  P_ele = 10.0;  // stronger corrections close to ground
+                                                            // this will effect rates, test if ok.
+      break;
     }
-    
-    last_time = millis();
   }
 
   // testing D factors
