@@ -3,7 +3,8 @@
   *  A Simple RC airplane autopilot using a Teensy LC with Prop Shield
   *  
 
-   Added altimeter with version 4.  Altitude hold term is 0.0 for version 5 for glider
+   Added altimeter with version 4.  Altitude hold term is 0.0 for version 5 for glider.
+      !!! also commented out the call to altitude_hold function
    Test plane is now a ASW28 glider. Want launch mode as I threw it into the ground on 1st attempts.
    
    The LED drivers on the prop shield are used to drive servos for aileron and elevator output.
@@ -32,7 +33,7 @@ const int four_channels_only = false;    // true if the tx does not have an alt 
 #define AIL_SERVO_GAIN 100        // use 100% gain in tx and adjust here
 #define ELE_DEAD1 30.0            // wing attack is added. so 20 and 5 would become -15 to 25 degress.
 #define ELE_DEAD2 0.2 
-#define ELE_REVERSE 0
+#define ELE_REVERSE 1
 #define ELE_ZERO_TRIM 1496        // zero trim tx signal length as received via the CD4050
 #define ELE_SERVO_GAIN 100        // auto up ele also limited elsewhere as the elevator hits the rudder on this plane
 #define YAW_REVERSE 1
@@ -285,7 +286,7 @@ void write_servos(){
     base_ele += auto_ele;
   }
   base_ail = constrain(base_ail,1000,2000);
-  base_ele = constrain(base_ele,1200,2000);   //limit up elevator. hits rudder on up ele
+  base_ele = constrain(base_ele,1000,2000);
   //if( debug ) Serial.println(base_ail);    // or base_ele for debug plotting
   base_ail = servo_gain( (int32_t)base_ail, AIL_ZERO_TRIM, AIL_SERVO_GAIN );
   Aileron.write(base_ail);
@@ -309,7 +310,7 @@ float dir;
     dir = ( ELE_REVERSE ) ? -1.0 : 1.0;
     t = base_ele - ELE_ZERO_TRIM;
     ele_setpoint = (0.2 * t * dir) + WING_ATTACK_ANGLE + climb_angle;   // was 0.15
-    if( mode == 2 ) ele_setpoint += altitude_hold( stick_ele ); 
+    // if( mode == 2 ) ele_setpoint += altitude_hold( stick_ele ); !!! unused on the asw28 glider
     base_ele = ELE_ZERO_TRIM;                
     
 }
@@ -426,7 +427,9 @@ static float old_dterm;
       //I term when tx sticks centered.  Does this cause issues when in a coordinated turn?  In a turn
       // the accelerometers may say the wing is level when it isn't.
       if( stick > (1500 - Tdead)  && stick < (1500 + Tdead) ) result_sum += I_ail * error;
-      // else result_sum = 0;  // zero I when moving the sticks ?
+      // leak the integral to zero.  Needed for passthrough mode or when I_ail is zero
+      if( result_sum > 0 ) --result_sum;
+      if( result_sum < 0 ) ++result_sum;
       result_sum = constrain(result_sum,-Tdead/2,Tdead/2);   // clip to half the trim region
      
       // recalculate the error for the P deadband
@@ -585,7 +588,7 @@ float yaw;
     }
     
     yaw = YP_ail * ave_gz;              // gyro running average, too slow?  Too slow will apply correction out of phase.
-    yaw = constrain(yaw,-20.0,20.0);    // max bank angle allowed for this correction
+    yaw = constrain(yaw,-10.0,10.0);    // max bank angle allowed for this correction
     if( YAW_REVERSE ) yaw = -yaw;
 
     return yaw;
@@ -601,7 +604,7 @@ float alt;
    }
 
    alt = ele_alt_hold * ( altitude_fixed - altimeter );
-   alt = constrain( alt, -2.0, 5.0 );     // allow 2 degrees correction
+   alt = constrain( alt, -5.0, 5.0 );     // allow 5 degrees correction
    if( ALT_REVERSE ) alt = -alt;          // think will need to be false 
 
    return alt;

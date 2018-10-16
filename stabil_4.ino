@@ -130,8 +130,8 @@ static int mode2_state;  // 0-alt hold, 1-climb 10 deg, 2-climb 20 deg, 3-launch
   if( mode == 1 || mode == 2 ){         // fly by wire.  Less twitchy with zero D terms?
     ail_dead = AIL_DEAD2;
     ele_dead = ELE_DEAD2;
-    P_ail = 5.0;  I_ail = 0.25;  D_ail = 0.0;  YP_ail = 0.4;
-    P_ele = 5.0;  D_ele = 0.0;
+    P_ail = 5.0;  I_ail = 0.25;  D_ail = 20.0;  YP_ail = 0.4;
+    P_ele = 5.0;  D_ele = 10.0;
   }
   
   // switching to mode 2 less than 5 seconds from last change enables mode 2 state change.  otherwise altitide hold mode.
@@ -285,7 +285,7 @@ void write_servos(){
     base_ele += auto_ele;
   }
   base_ail = constrain(base_ail,1000,2000);
-  base_ele = constrain(base_ele,1200,2000);   //limit up elevator. hits rudder on up ele
+  base_ele = constrain(base_ele,1000,2000);
   //if( debug ) Serial.println(base_ail);    // or base_ele for debug plotting
   base_ail = servo_gain( (int32_t)base_ail, AIL_ZERO_TRIM, AIL_SERVO_GAIN );
   Aileron.write(base_ail);
@@ -426,7 +426,9 @@ static float old_dterm;
       //I term when tx sticks centered.  Does this cause issues when in a coordinated turn?  In a turn
       // the accelerometers may say the wing is level when it isn't.
       if( stick > (1500 - Tdead)  && stick < (1500 + Tdead) ) result_sum += I_ail * error;
-      // else result_sum = 0;  // zero I when moving the sticks ?
+      // leak the integral to zero.  Needed for passthrough mode or when I_ail is zero
+      if( result_sum > 0 ) --result_sum;
+      if( result_sum < 0 ) ++result_sum;
       result_sum = constrain(result_sum,-Tdead/2,Tdead/2);   // clip to half the trim region
      
       // recalculate the error for the P deadband
@@ -437,11 +439,18 @@ static float old_dterm;
       result = result + P_ail * error + result_sum;   // + pterm;
 
       dterm = D_ail * dval;
-      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise by ignoring +-5 changes.
-      else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
-      else if( old_dterm > 1.0 ) old_dterm -= 0.5;              // leak to zero
-      else if( old_dterm < -1.0 ) old_dterm += 0.5;
+//      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise by ignoring +-5 changes.
+//      else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
+//      else if( old_dterm > 1.0 ) old_dterm -= 0.5;              // leak to zero
+//      else if( old_dterm < -1.0 ) old_dterm += 0.5;
+//      else old_dterm = 0;
+
+      if( dterm > old_dterm + 8 ) old_dterm += 3;      // try slower attack and decay
+      else if( dterm < old_dterm - 8 ) old_dterm -= 3;
+      else if( old_dterm > 1.0 ) old_dterm -= 0.3;              // leak to zero
+      else if( old_dterm < -1.0 ) old_dterm += 0.3;
       else old_dterm = 0;
+
       
       // result -=  D_ail * dval;
       result -= old_dterm;                 // this does damping only with D on the controlled value instead of error
@@ -481,11 +490,18 @@ static float old_dterm;
       result = result + P_ele * error;   // + result_sum
 
       dterm = D_ele * dval;
-      if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
-      else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
-      else if( old_dterm > 1.0 ) old_dterm -= 0.5;
-      else if( old_dterm < -1.0 ) old_dterm += 0.5;
+  //    if( dterm > old_dterm + 5 ) old_dterm = dterm - 2.5;      // remove noise
+  //    else if( dterm < old_dterm - 5 ) old_dterm = dterm + 2.5;
+  //    else if( old_dterm > 1.0 ) old_dterm -= 0.5;
+  //    else if( old_dterm < -1.0 ) old_dterm += 0.5;
+  //    else old_dterm = 0;
+
+      if( dterm > old_dterm + 8 ) old_dterm += 3;      // try slower attack and decay
+      else if( dterm < old_dterm - 8 ) old_dterm -= 3;
+      else if( old_dterm > 1.0 ) old_dterm -= 0.3;              // leak to zero
+      else if( old_dterm < -1.0 ) old_dterm += 0.3;
       else old_dterm = 0;
+
       
       // result -=  D_ele * dval;
       result -= old_dterm;
