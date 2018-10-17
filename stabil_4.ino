@@ -426,9 +426,7 @@ static float old_dterm;
       //I term when tx sticks centered.  Does this cause issues when in a coordinated turn?  In a turn
       // the accelerometers may say the wing is level when it isn't.
       if( stick > (1500 - Tdead)  && stick < (1500 + Tdead) ) result_sum += I_ail * error;
-      // leak the integral to zero.  Needed for passthrough mode or when I_ail is zero
-      if( result_sum > 0 ) --result_sum;
-      if( result_sum < 0 ) ++result_sum;
+      if( I_ail == 0.0 ) result_sum = 0.0;   //  Needed for passthrough mode or when I_ail is zero
       result_sum = constrain(result_sum,-Tdead/2,Tdead/2);   // clip to half the trim region
      
       // recalculate the error for the P deadband
